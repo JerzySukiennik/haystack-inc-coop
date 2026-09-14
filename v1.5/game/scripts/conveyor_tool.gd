@@ -1,0 +1,321 @@
+# Conveyor remote: click a start point, walk while a green/red hologram follows live, scroll to bend, click again to build.
+class_name ConveyorTool
+extends Node3D
+
+signal state_changed(kind: String)
+signal placed(line: ConveyorLine)
+
+const RANGE := 22.0
+const STEP := 0.5
+const MAX_BEND := 7
+const HOLO_SHADER := """
+shader_type spatial;
+render_mode unshaded, blend_mix, depth_draw_never, cull_disabled, shadows_disabled;
+uniform vec4 tint : source_color = vec4(0.3, 1.0, 0.45, 0.4);
+void fragment() {
+	float scan = 0.75 + 0.25 * sin(TIME * 5.0 + FRAGCOORD.y * 0.08);
+	float rim = pow(1.0 - clamp(abs(dot(NORMAL, VIEW)), 0.0, 1.0), 1.5);
+	ALBEDO = tint.rgb * (0.8 + rim * 0.6);
+	ALPHA = tint.a * scan + rim * 0.25;
+}
+"""
+
+var main: Node
+var player: Player
+var equipped := false
+var placing := false
+var valid := false
+var reason := ""
+var bend := 0
+var start := Vector3.ZERO
+var start_dir := Vector3.FORWARD
+var _end := Vector3.ZERO
+var _end_smooth := Vector3.ZERO
+var _points := PackedVector3Array()
+var _grounds := PackedFloat32Array()
+var _holo: MeshInstance3D
+var _holo_mat: ShaderMaterial
+var _viewmodel: MeshInstance3D
+var _pan := 0.0
+var _kind := ""
+
+
+func _ready() -> void:
+	_holo = MeshInstance3D.new()
+	_holo_mat = ShaderMaterial.new()
+	var sh := Shader.new()
+	sh.code = HOLO_SHADER
+	_holo_mat.shader = sh
+	_holo.material_override = _holo_mat
+	_holo.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_holo.visible = false
+	add_child(_holo)
+
+
+func attach(p: Player) -> void:
+	player = p
+	_viewmodel = MeshInstance3D.new()
+	_viewmodel.mesh = Items.conveyor_remote_mesh()
+	_viewmodel.material_override = MeshKit.vertex_material(0.6)
+	_viewmodel.position = Vector3(0.24, -0.2, -0.46)
+	_viewmodel.rotation = Vector3(0.55, 0.45, 0.1)
+	_viewmodel.scale = Vector3.ONE * 0.7
+	_viewmodel.visible = false
+	_viewmodel.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	p.camera.add_child(_viewmodel)
+
+
+func meters_owned() -> int:
+	return main.conveyor_meters
+
+
+func set_equipped(on: bool) -> void:
+	if on == equipped:
+		return
+	equipped = on
+	if not on:
+		cancel()
+	_viewmodel.visible = on
+	if on:
+		player.drop()
+		player.cancel_pull()
+		_viewmodel.position.y = -0.42
+		create_tween().tween_property(_viewmodel, "position:y", -0.2, 0.2).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	_emit_state()
+
+
+func _aim_point() -> Dictionary:
+	var cam := player.camera
+	var from := cam.global_position
+	var to := from - cam.global_basis.z * RANGE
+	var q := PhysicsRayQueryParameters3D.create(from, to, 1)
+	q.exclude = [player.get_rid()]
+	var hit := get_world_3d().direct_space_state.intersect_ray(q)
+	if hit.is_empty():
+		var flat := from - cam.global_basis.z * RANGE
+		return {"point": Vector3(flat.x, _ground_at(flat), flat.z), "ok": false}
+	return {"point": hit.position, "ok": true}
+
+
+func _ground_at(p: Vector3) -> float:
+	var q := PhysicsRayQueryParameters3D.create(Vector3(p.x, 60.0, p.z), Vector3(p.x, -20.0, p.z), 1)
+	q.collide_with_areas = false
+	var body: Node = main.get_node_or_null("Ground")
+	if body:
+		var space := get_world_3d().direct_space_state
+		var hits := 0
+		while hits < 6:
+			var hit := space.intersect_ray(q)
+			if hit.is_empty():
+				break
+			if hit.collider == body:
+				return hit.position.y
+			var ex: Array[RID] = q.exclude
+			ex.append(hit.rid)
+			q.exclude = ex
+			hits += 1
+	return World.ground_height(p.x, p.z)
+
+
+func primary() -> void:
+	if not equipped:
+		return
+	if not placing:
+		var aim := _aim_point()
+		if not aim.ok:
+			Sfx.play_ui("deny", -8.0)
+			return
+		placing = true
+		bend = 0
+		start = aim.point
+		start.y = _ground_at(start)
+		var f := -player.camera.global_basis.z
+		f.y = 0.0
+		start_dir = f.normalized() if f.length() > 0.01 else Vector3.FORWARD
+		_end_smooth = start + start_dir * 1.0
+		_holo.visible = true
+		Sfx.play_ui("holo_start", -6.0)
+		_update_path(0.0)
+	elif valid:
+		_place()
+	else:
+		Sfx.play_ui("deny", -6.0)
+	_emit_state()
+
+
+func cancel() -> void:
+	if placing:
+		Sfx.play_ui("holo_cancel", -8.0)
+	placing = false
+	_holo.visible = false
+	_emit_state()
+
+
+func scroll(steps: int) -> void:
+	if not placing:
+		return
+	bend = clampi(bend + steps, -MAX_BEND, MAX_BEND)
+
+
+func pan(delta_y: float) -> void:
+	_pan += delta_y
+	while absf(_pan) >= 1.0:
+		scroll(-1 if _pan > 0.0 else 1)
+		_pan -= signf(_pan)
+
+
+func _bezier(p0: Vector3, p1: Vector3, p2: Vector3, p3: Vector3, t: float) -> Vector3:
+	var u := 1.0 - t
+	return p0 * u * u * u + p1 * 3.0 * u * u * t + p2 * 3.0 * u * t * t + p3 * t * t * t
+
+
+func _update_path(delta: float) -> void:
+	var aim := _aim_point()
+	_end = aim.point
+	var k := 1.0 - exp(-delta * 14.0) if delta > 0.0 else 1.0
+	_end_smooth = _end_smooth.lerp(_end, k)
+	var p0 := Vector3(start.x, 0, start.z)
+	var p3 := Vector3(_end_smooth.x, 0, _end_smooth.z)
+	var chord := p0.distance_to(p3)
+	var along := (p3 - p0).normalized() if chord > 0.01 else start_dir
+	var angle := deg_to_rad(bend * 12.0)
+	var p1 := p0 + along.rotated(Vector3.UP, angle) * chord * 0.38
+	var p2 := p3 - along.rotated(Vector3.UP, -angle) * chord * 0.38
+	var dense := PackedVector3Array()
+	for i in 65:
+		dense.append(_bezier(p0, p1, p2, p3, i / 64.0))
+	var total := 0.0
+	for i in dense.size() - 1:
+		total += dense[i].distance_to(dense[i + 1])
+	_points = PackedVector3Array()
+	_grounds = PackedFloat32Array()
+	var count := maxi(int(ceil(total / STEP)), 1)
+	var seg := total / count
+	var want := 0.0
+	var acc := 0.0
+	var j := 0
+	for n in count + 1:
+		want = n * seg
+		while j < dense.size() - 2 and acc + dense[j].distance_to(dense[j + 1]) < want:
+			acc += dense[j].distance_to(dense[j + 1])
+			j += 1
+		var l := dense[j].distance_to(dense[j + 1])
+		var t := clampf((want - acc) / maxf(l, 0.0001), 0.0, 1.0)
+		var flat := dense[j].lerp(dense[j + 1], t)
+		var g := _ground_at(flat)
+		_grounds.append(g)
+		_points.append(Vector3(flat.x, g + ConveyorLine.TOP, flat.z))
+	_validate(total)
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	if _points.size() >= 2:
+		ConveyorLine.add_visual(st, _points, _grounds, Color.WHITE)
+		st.append_from(ConveyorLine.belt_mesh(_points), 0, Transform3D.IDENTITY)
+	_holo.mesh = st.commit()
+	_holo_mat.set_shader_parameter("tint", Color(0.3, 1.0, 0.45, 0.35) if valid else Color(1.0, 0.25, 0.2, 0.4))
+
+
+func length_meters() -> int:
+	if _points.size() < 2:
+		return 0
+	var total := 0.0
+	for i in _points.size() - 1:
+		var a := _points[i]
+		var b := _points[i + 1]
+		total += Vector2(a.x - b.x, a.z - b.z).length()
+	return maxi(int(ceil(total - 0.05)), 1)
+
+
+func _validate(total: float) -> void:
+	valid = true
+	reason = ""
+	var need := length_meters()
+	if total < 0.9:
+		valid = false
+		reason = "short"
+		return
+	if need > meters_owned():
+		valid = false
+		reason = "meters"
+	var space := get_world_3d().direct_space_state
+	var ground: Node = main.get_node_or_null("Ground")
+	var shape := BoxShape3D.new()
+	var params := PhysicsShapeQueryParameters3D.new()
+	params.shape = shape
+	params.collision_mask = 1 | 16
+	var excl: Array[RID] = [player.get_rid()]
+	if ground:
+		excl.append((ground as CollisionObject3D).get_rid())
+	params.exclude = excl
+	var dist := 0.0
+	for i in _points.size() - 1:
+		var a := _points[i]
+		var b := _points[i + 1]
+		var slope := absf(b.y - a.y) / maxf(Vector2(a.x - b.x, a.z - b.z).length(), 0.01)
+		if slope > 0.6:
+			valid = false
+			reason = "blocked"
+			return
+		dist += a.distance_to(b)
+		var basis := ConveyorLine.piece_basis(a, b)
+		var mid := (a + b) * 0.5
+		var low := minf(_grounds[i], _grounds[i + 1]) + 0.3
+		var height := mid.y + 0.15 - low
+		shape.size = Vector3(a.distance_to(b), maxf(height, 0.1), ConveyorLine.WIDTH + 0.16)
+		params.transform = Transform3D(basis, Vector3(mid.x, low + height * 0.5, mid.z))
+		for hit in space.intersect_shape(params, 8):
+			var node: Node = hit.collider
+			if node is HayPiece:
+				continue
+			var near_end := total - dist < 1.4
+			if near_end and _belongs_to_sell_machine(node):
+				continue
+			valid = false
+			reason = "blocked"
+			return
+
+
+func _belongs_to_sell_machine(node: Node) -> bool:
+	while node:
+		if node is SellMachine:
+			return true
+		node = node.get_parent()
+	return false
+
+
+func _place() -> void:
+	var need := length_meters()
+	var line := ConveyorLine.new()
+	main.add_child(line)
+	line.meters = need
+	line.build(_points, _grounds)
+	main.conveyor_meters -= need
+	main.inventory_changed.emit()
+	Sfx.play_at("holo_place", _points[_points.size() / 2], -2.0)
+	placing = false
+	_holo.visible = false
+	placed.emit(line)
+
+
+func _process(delta: float) -> void:
+	if placing:
+		_update_path(delta)
+	_emit_state()
+
+
+func _emit_state() -> void:
+	var kind := ""
+	if equipped:
+		if not placing:
+			kind = "tool_idle"
+		elif valid:
+			kind = "tool_valid"
+		else:
+			kind = "tool_" + (reason if reason != "" else "blocked")
+	if kind != _kind:
+		_kind = kind
+		state_changed.emit(kind)
+
+
+func status_text() -> String:
+	return "%d m" % length_meters()
