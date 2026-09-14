@@ -58,3 +58,10 @@ is described in `MANIFEST.md`; CC0 allows it.
 | `textures/sky_kloofendal_48d_partly_cloudy_puresky_2k.hdr` | https://polyhaven.com/a/kloofendal_48d_partly_cloudy_puresky | Greg Zaal (original), Jarod Guest (sky edits) | CC0 1.0 |
 | `textures/sky_farm_field_puresky_1k.hdr` | https://polyhaven.com/a/farm_field_puresky | Dimitrios Savva (photo), Jarod Guest (processing) | CC0 1.0 |
 | `textures/ground_dirt_floor_diff_1k.jpg`, `textures/ground_dirt_floor_diff_256.png` | https://polyhaven.com/a/dirt_floor | eye-candy.xyz | CC0 1.0 |
+
+## Fonts (v1.7)
+| File | Source | Author | License |
+|---|---|---|---|
+| `fonts/Nunito-Variable.ttf` | https://github.com/google/fonts/tree/main/ofl/nunito | Vernon Adams, Jacques Le Bailly, Manvel Shmavonyan, Alexei Vanyashin | SIL OFL 1.1 (`fonts/OFL-Nunito.txt`) |
+| `fonts/SairaStencilOne-Regular.ttf` | https://github.com/google/fonts/tree/main/ofl/sairastencilone | Omnibus-Type | SIL OFL 1.1 |
+| `fonts/JetBrainsMono-Variable.ttf` | https://github.com/google/fonts/tree/main/ofl/jetbrainsmono | JetBrains | SIL OFL 1.1 |
