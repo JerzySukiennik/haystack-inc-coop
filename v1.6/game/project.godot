@@ -1,0 +1,40 @@
+; Engine configuration file.
+
+config_version=5
+
+[application]
+
+config/name="Haystack Inc."
+config/description="Find one needle in a haystack. Co-op edition."
+run/main_scene="res://scenes/main.tscn"
+config/features=PackedStringArray("4.6", "Forward Plus")
+config/icon="res://icon.svg"
+
+[autoload]
+
+Sfx="*res://scripts/sfx.gd"
+
+[display]
+
+window/size/viewport_width=1600
+window/size/viewport_height=900
+window/size/mode=3
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+window/vsync/vsync_mode=1
+
+[physics]
+
+3d/physics_engine="Jolt Physics"
+common/physics_ticks_per_second=90
+jolt_physics_3d/simulation/penetration_slop=0.002
+jolt_physics_3d/simulation/speculative_contact_distance=0.01
+jolt_physics_3d/simulation/position_steps=3
+jolt_physics_3d/simulation/velocity_steps=12
+
+[rendering]
+
+anti_aliasing/quality/msaa_3d=2
+anti_aliasing/quality/screen_space_aa=1
+lights_and_shadows/directional_shadow/size=8192
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=3
