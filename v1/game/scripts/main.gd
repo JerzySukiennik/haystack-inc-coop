@@ -1,0 +1,98 @@
+# Game entry: input map, world, haystack, player, HUD, pause handling, settings and optional autotest.
+extends Node3D
+
+const SETTINGS_PATH := "user://settings.cfg"
+
+var player: Player
+var haystack: Haystack
+var hud: Hud
+var menu_open := false
+
+
+func _ready() -> void:
+	_setup_input()
+	World.build(self)
+	haystack = Haystack.new()
+	haystack.name = "Haystack"
+	add_child(haystack)
+	player = Player.new()
+	player.name = "Player"
+	add_child(player)
+	player.global_position = Vector3(0.0, 0.1, 13.0)
+	player.look_at_point(Vector3(0, 2.0, 0))
+	hud = Hud.new()
+	add_child(hud)
+	player.hover_changed.connect(hud.set_hover)
+	player.charge_changed.connect(hud.set_charge)
+	player.pulled_changed.connect(hud.set_pulled)
+	haystack.count_changed.connect(hud.set_count)
+	hud.resume_requested.connect(func() -> void: set_menu(false))
+	hud.sensitivity_changed.connect(func(v: float) -> void:
+		player.sensitivity = v
+		_save_settings())
+	_load_settings()
+	if "--autotest" in OS.get_cmdline_user_args():
+		var t := preload("res://scripts/autotest.gd").new()
+		t.main = self
+		add_child(t)
+	else:
+		_capture(true)
+
+
+func _setup_input() -> void:
+	var keys := {
+		"move_forward": [KEY_W, KEY_UP],
+		"move_back": [KEY_S, KEY_DOWN],
+		"move_left": [KEY_A, KEY_LEFT],
+		"move_right": [KEY_D, KEY_RIGHT],
+		"jump": [KEY_SPACE],
+		"sprint": [KEY_SHIFT],
+	}
+	for action in keys:
+		if not InputMap.has_action(action):
+			InputMap.add_action(action)
+		for k in keys[action]:
+			var ev := InputEventKey.new()
+			ev.physical_keycode = k
+			InputMap.action_add_event(action, ev)
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and (event as InputEventKey).pressed and (event as InputEventKey).keycode == KEY_ESCAPE:
+		set_menu(not menu_open)
+	elif event is InputEventMouseButton and (event as InputEventMouseButton).pressed and not menu_open:
+		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+			_capture(true)
+			get_viewport().set_input_as_handled()
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT and player and not menu_open and not "--autotest" in OS.get_cmdline_user_args():
+		player.drop()
+		hud.set_click_hint(true)
+
+
+func set_menu(open: bool) -> void:
+	menu_open = open
+	hud.set_menu(open, player.sensitivity)
+	player.input_enabled = not open
+	if open:
+		player.drop()
+	_capture(not open)
+
+
+func _capture(on: bool) -> void:
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if on else Input.MOUSE_MODE_VISIBLE
+	hud.set_click_hint(false)
+
+
+func _load_settings() -> void:
+	var cfg := ConfigFile.new()
+	if cfg.load(SETTINGS_PATH) == OK:
+		player.sensitivity = cfg.get_value("input", "sensitivity", player.sensitivity)
+
+
+func _save_settings() -> void:
+	var cfg := ConfigFile.new()
+	cfg.set_value("input", "sensitivity", player.sensitivity)
+	cfg.save(SETTINGS_PATH)
